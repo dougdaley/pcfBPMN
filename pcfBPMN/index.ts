@@ -11,11 +11,25 @@ import { IInputs, IOutputs } from "./generated/ManifestTypes";
 import Modeler from 'bpmn-js/lib/Modeler';
 import 'bpmn-js/dist/assets/diagram-js.css';
 import 'bpmn-js/dist/assets/bpmn-font/css/bpmn.css';
+import { EventBus } from "bpmn-js/lib/BaseViewer";
+//import { defaultMaxListeners } from "events";
+//import { error } from "console";
 
 export class pcfBPMN implements ComponentFramework.StandardControl<IInputs, IOutputs> {
     
-    private modeler: Modeler;
-    private container: HTMLDivElement;
+    /**
+     * Declare the properties of the class
+     */
+
+    private _modeler: Modeler; // bpmn-js modeler instance for BPMN diagram rendering and editing
+
+    private _container: HTMLDivElement; // HTML container element into which the modeler rendered
+
+    private _notifyOutputChanged: () => void; // Callback function to notify the framework of output changes
+
+    private _bpmnXML: string; // BPMN XML string that maintains the current diagram and is stored in the Dataverse column
+
+    private _context: ComponentFramework.Context<IInputs>; // Context object that provides access to the framework and control properties
     
     /**
      * Empty constructor.
@@ -38,11 +52,51 @@ export class pcfBPMN implements ComponentFramework.StandardControl<IInputs, IOut
         state: ComponentFramework.Dictionary,
         container: HTMLDivElement
     ): void {
-        // Add control initialization code
-        this.container = container;
-        this.container.style.height = "600px";
-        this.modeler = new Modeler({
-            container: this.container
+        this._context = context;
+        this._container = container;
+        this._container.style.height = "600px"; // Todo: make this dynamic and resizeable by a user
+        this._notifyOutputChanged = notifyOutputChanged;
+
+        // Instantiate the BPMN modeler and set the container for rendering
+        this._modeler = new Modeler({
+            container: this._container
+        });
+
+        // Initialise with a default diagram in case no valid XML is able to be loaded from the field
+        this._modeler.createDiagram();
+        
+        // Try to load the diagram from the field context
+        if (this._context.parameters.bpmnXML.raw) {
+            this._bpmnXML = this._context.parameters.bpmnXML.raw;
+
+            try {
+                this._modeler.importXML(this._bpmnXML);
+            } catch (error) {
+                console.error('Error importing BPMN XML:', error);
+            }
+        }
+
+        // Listen for changes to the BPMN diagram, update the bpmnXML property and notify the control framework accordingly
+        this.attachEventListeners();
+    }
+
+    /**
+     * Attaches event listeners to the BPMN modeler instance.
+     * This method listens for changes in the BPMN diagram and updates the bpmnXML property accordingly.
+     */
+    private attachEventListeners(): void {
+        const eventBus = this._modeler.get<EventBus<Event>>('eventBus');
+
+        eventBus.on('element.changed', async () => {
+            try {
+                const result = await this._modeler.saveXML({ format: true });
+                if (result.xml) {
+                    this._bpmnXML = result.xml;
+                    this._notifyOutputChanged();
+                };
+            } catch (error) {
+                console.error('Error saving BPMN XML:', error);
+            }
         });
     }
 
@@ -52,23 +106,8 @@ export class pcfBPMN implements ComponentFramework.StandardControl<IInputs, IOut
      * @param context The entire property bag available to control via Context Object; It contains values as set up by the customizer mapped to names defined in the manifest, as well as utility functions
      */
     public async updateView(context: ComponentFramework.Context<IInputs>): Promise<void> {
-        // Test example importing a base diagram
         try {
-            await this.modeler.importXML(`
-                <?xml version="1.0" encoding="UTF-8"?>
-                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" id="Definitions_0liybch" targetNamespace="http://bpmn.io/schema/bpmn" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" exporter="Camunda Modeler" exporterVersion="5.30.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
-                <bpmn:process id="Process_1kzszjq" isExecutable="true">
-                    <bpmn:startEvent id="StartEvent_1" />
-                </bpmn:process>
-                <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-                    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_1kzszjq">
-                    <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
-                        <dc:Bounds x="182" y="162" width="36" height="36" />
-                    </bpmndi:BPMNShape>
-                    </bpmndi:BPMNPlane>
-                </bpmndi:BPMNDiagram>
-                </bpmn:definitions>
-                `);
+            await this._modeler.importXML(this._bpmnXML);
         } catch (error) {
             console.error('Error importing BPMN XML:', error);
         }
@@ -79,7 +118,7 @@ export class pcfBPMN implements ComponentFramework.StandardControl<IInputs, IOut
      * @returns an object based on nomenclature defined in manifest, expecting object[s] for property marked as "bound" or "output"
      */
     public getOutputs(): IOutputs {
-        return {};
+        return {bpmnXML: this._bpmnXML ? this._bpmnXML : undefined};
     }
 
     /**
